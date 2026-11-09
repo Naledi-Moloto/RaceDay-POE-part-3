@@ -1,0 +1,211 @@
+# RaceDay: Event Management for South African Road Running, Walking & Cycling Events
+
+RaceDay is a web-based event management system for the South African road running, walking and cycling community. **Organisers** create and manage events, categories and results. **Participants** browse upcoming events, enter by choosing a category, track their enrolments and see their personal race history.
+
+This is an individual Portfolio of Evidence built in three parts:
+
+| Part | What was delivered |
+|---|---|
+| 1. Planning | ERD, API endpoint plan and SQL script (in `/docs`) |
+| 2. API | ASP.NET Core 8 Web API, EF Core Code-First, JWT authentication with roles, Swagger, unit tests, CI |
+| 3. Web app | ASP.NET Core MVC front end, Azure Blob Storage (through the API), Docker |
+
+---
+
+## Architecture
+
+```
+Browser  ->  RaceDay.Web (MVC)  ->  RaceDay.Api  ->  SQL Server
+                                        |
+                                        +---------->  Azure Blob Storage (images)
+```
+
+- The **MVC app never touches the database or Azure.** Every data operation is an HTTP call to the API, made by one class (`ApiClient`).
+- **Login:** the MVC app sends credentials to the API, receives a JWT, and keeps the token, role, name and user ID in the ASP.NET Core **session**. The token is attached to every API call.
+- **Role protection:** a `[SessionAuthorize]` filter protects every MVC controller by login and role, and the API enforces the roles again with `[Authorize(Roles = ...)]`.
+- **Images:** the MVC app forwards uploads to the API, which stores them in Azure Blob Storage and saves only the image URL in the database.
+
+## Technology
+
+| Area | Technology |
+|---|---|
+| API | ASP.NET Core 8 Web API, Entity Framework Core 8 (Code-First), SQL Server |
+| Authentication | JWT bearer tokens, BCrypt password hashing, two separate user tables (Organisers, Participants) |
+| API documentation | Swagger / Swashbuckle with XML comments |
+| Web app | ASP.NET Core 8 MVC, Razor, Bootstrap 5, session state |
+| Images | Azure Blob Storage (`Azure.Storage.Blobs`), used only inside the API |
+| Tests | xUnit, `WebApplicationFactory`, EF Core InMemory |
+| DevOps | GitHub Actions, Docker (multi-stage build) |
+
+## Repository structure
+
+```
+/docs                  Part 1: ERD, API endpoint plan (PDF), SQL script
+/RaceDay.Api           Part 2 + Azure: the Web API
+/RaceDay.Tests         xUnit tests that run the real API in memory
+/RaceDay.Web           Part 3: the MVC app, with its Dockerfile
+/.github/workflows     ci.yml (build, test, Docker build)
+README.md
+```
+
+---
+
+## Running the project locally
+
+### Prerequisites
+Visual Studio (with the ASP.NET and web development workload), the .NET 8 SDK/runtime, SQL Server (Express or Developer) and SSMS. Docker Desktop is only needed for the Docker section. An Azure Storage account is only needed for image uploads.
+
+### 1. Database
+The database is created from the code (Code-First).
+1. In `RaceDay.Api/appsettings.json`, set `ConnectionStrings:DefaultConnection` to your SQL Server (for example `Server=localhost;Database=RaceDayApiDB;Trusted_Connection=True;TrustServerCertificate=True;`).
+2. In the Package Manager Console, with **RaceDay.Api** as the default project, run `Update-Database`.
+
+### 2. API settings
+`appsettings.json` contains the JWT settings (`Jwt:Key` must be at least 32 characters) and an **empty** `AzureBlob:ConnectionString`. The real Azure connection string is stored in **User Secrets** and is never committed:
+
+1. Right-click `RaceDay.Api` -> **Manage User Secrets**.
+2. Use exactly this shape:
+
+```json
+{
+  "AzureBlob": {
+    "ConnectionString": "DefaultEndpointsProtocol=https;AccountName=...;AccountKey=...;EndpointSuffix=core.windows.net"
+  }
+}
+```
+
+In Azure, create a storage account and a container called `raceday-images` with anonymous access level **Blob** (this requires "Allow Blob anonymous access" on the account). Without an Azure connection string the whole system still works, but image uploads will report that storage is not configured.
+
+### 3. MVC settings
+In `RaceDay.Web/appsettings.json`, set `ApiSettings:BaseUrl` to the API's address (for example `https://localhost:7123/`).
+
+### 4. Run
+Set **both** `RaceDay.Api` and `RaceDay.Web` as startup projects (right-click the solution -> Configure Startup Projects -> Multiple startup projects) and press F5. Swagger opens for the API and the website opens for the MVC app.
+
+---
+
+## Running the MVC app with Docker
+
+**Prerequisites:** Docker Desktop is running, and the RaceDay API is running on your computer (in these examples its http address is `http://localhost:5123`; use your own port).
+
+Build the image (first time only, from the `RaceDay.Web` folder):
+
+```bash
+docker build -t raceday-web .
+```
+
+Start the application with a single command:
+
+```bash
+docker run --rm -p 8080:8080 -e ApiSettings__BaseUrl=http://host.docker.internal:5123/ -e TZ=Africa/Johannesburg --name raceday-web raceday-web
+```
+
+Then open http://localhost:8080 and press Ctrl+C to stop.
+
+The container reaches the API on the host computer through `host.docker.internal`, and the API address is supplied as an environment variable, so the code is identical to the locally run version. The Dockerfile uses a multi-stage build (SDK image to build, small ASP.NET runtime image to run), restores packages before copying source for layer caching, uses a `.dockerignore`, runs as a non-root user and contains no secrets.
+
+---
+
+## Features by role
+
+### Public pages
+Home, Register (choose Organiser or Participant), Login, Access Denied.
+
+### Organiser
+| Page | What it does |
+|---|---|
+| Dashboard | Totals (events, upcoming events, enrolments, next event), upcoming events with enrolments per event, past events |
+| My Events | List with Edit, Delete and links to Categories, Enrolments and Results |
+| Create / Edit event | Name, description, date, start time, venue (location), distance, event type, optional banner image |
+| Add venue | Name, address, city, province, optional coordinates |
+| Categories | Add, edit and delete age or distance categories for an event |
+| Enrolments | Every participant enrolled for the event, with category, bib number and colour-coded status |
+| Results | Enter status, finish time, position and distance covered per participant. Saving publishes the result. Locked until the event date has passed |
+
+### Participant
+| Page | What it does |
+|---|---|
+| Events (home) | Upcoming events as cards, with filters for search, type, province and date |
+| Event details | Full information, banner image and categories, each with an Enrol button |
+| My Enrolments | All enrolments with status badges and a Cancel button |
+| My Results | Event, date, category, finish time and position such as "47th of 312 finishers" |
+| Profile | Update name, phone and date of birth, and upload a profile picture |
+
+Statuses are colour coded: **Confirmed** (green, stored as `Enrolled`), **Cancelled** (red), **Did not finish** (amber) and **Did not start** (grey).
+
+## API overview
+The API implements the 27 endpoints from the Part 1 plan (see `/docs`), plus two upload endpoints added in Part 3: `POST /api/events/{id}/banner` and `POST /api/participants/me/picture`. All endpoints are visible and testable in Swagger, which shows each endpoint's purpose, the data it expects, its responses and its access rule (public, any logged-in user, Organiser only or Participant only).
+
+---
+
+## Design decisions
+- **Two separate user tables** (Organisers and Participants), with separate register, login and profile endpoints. The role in the JWT comes from which login endpoint was used.
+- **MVC has its own copy of the API's response classes** because it must not reference the API project.
+- **Result rules live in the API** (for example a finished result needs a finish time). The MVC form only collects values and shows the API's message.
+- **Enrolment cancellation keeps the row** and sets its status to `Cancelled`. Enrolling again re-activates it.
+- **Invariant culture** is set in the MVC app so decimals use a dot and dates behave identically on any machine and inside Docker.
+- **Pages are sent with no-cache headers**, so the Back button cannot show protected pages after logging out.
+
+## Deviations from the Part 1 plan
+1. `DELETE /api/events/{id}` and `DELETE /api/categories/{id}` also return **409 Conflict** when enrolments exist.
+2. Role-restricted endpoints also return **403** for the wrong role, and the profile endpoints return **404** if the account no longer exists.
+3. `DELETE /api/enrolments/{id}` cancels (status `Cancelled`) and returns **409** if a result already exists.
+4. Enrolling checks the category's **minimum age** (400) when the participant has a date of birth. Names such as "Under 20" are labels only.
+5. Result field rules and cancelled-enrolment checks return **400**.
+6. Bib numbers are generated as `E{eventId}-{number}`.
+7. `POST /api/events` returns a `Location` header, and `eventType` is accepted in any letter case.
+8. Part 3 additions: `EventDto.EnrolmentCount`, `ResultDto.EventDate` and `ResultDto.TotalFinishers`; columns `Events.BannerUrl` and `Participants.ProfilePictureUrl`; the two upload endpoints. The SQL equivalent is:
+   ```sql
+   ALTER TABLE Events ADD BannerUrl NVARCHAR(500) NULL;
+   ALTER TABLE Participants ADD ProfilePictureUrl NVARCHAR(500) NULL;
+   ```
+9. HTTPS redirection is applied only outside Development, so the Docker container can call the API over http.
+10. EF Core names its own foreign keys and indexes, and unique rules are unique indexes instead of `UNIQUE` constraints. The tables, columns, types, keys and delete rules match the Part 1 script.
+11. The MVC event form requires a description and distance (the brief lists them as required), although the API treats them as optional.
+
+## Testing
+Unit tests are in `RaceDay.Tests`. They start the real API in memory using `WebApplicationFactory`, replace SQL Server with an in-memory database, and send real HTTP requests, so role checks, ownership checks and status codes are exercised exactly as in production. Each test gets its own empty database. The tests cover registration and login, event management by Organisers (create, view, update, delete), rejection of Participants, unauthenticated users and other Organisers, and enrolments. Run them with Test Explorer or `dotnet test`.
+
+<!-- TODO: list your test class names and how many tests pass -->
+
+## CI/CD
+`.github/workflows/ci.yml` runs on every push and pull request. It builds the whole solution (API, tests and MVC app), runs all unit tests, and then builds the MVC Docker image.
+
+<!-- TODO: add the screenshot of the green build -->
+![Green build](docs/screenshots/green-build.png)
+
+## Security notes
+- Passwords are hashed with BCrypt and never stored or returned in plain text.
+- JWT tokens carry the user's ID and role. Protected endpoints require a valid token, and role and ownership are checked in the API.
+- Secrets are not in the repository. The Azure key lives in User Secrets. Anyone running the project supplies their own.
+- Anyone can register as an Organiser (the brief asks users to choose their role). A production system would need an approval step.
+
+## Known limitations and future improvements
+- Replaced images stay in Azure (old files are not deleted).
+- The API does not block enrolling in past events or entering results before an event ends. The MVC app enforces this in the interface only.
+- Positions are typed in by the Organiser, not calculated from finish times.
+- Sessions are held in memory, so restarting the MVC app logs everyone out.
+- No email verification, password reset or Organiser profile page.
+
+## Screenshots
+<!-- TODO: add your screenshots here, for example:
+![Swagger](docs/screenshots/swagger.png)
+![Organiser dashboard](docs/screenshots/organiser-dashboard.png)
+![Participant events](docs/screenshots/participant-events.png)
+![My results](docs/screenshots/my-results.png)
+![Docker running](docs/screenshots/docker-running.png)
+![Azure container](docs/screenshots/azure-container.png) -->
+
+## References
+- Microsoft Learn: ASP.NET Core documentation (MVC, session and app state, authentication and authorization, integration tests with `WebApplicationFactory`): https://learn.microsoft.com/aspnet/core/
+- Microsoft Learn: Entity Framework Core: https://learn.microsoft.com/ef/core/
+- Microsoft Learn: Azure Blob Storage for .NET: https://learn.microsoft.com/azure/storage/blobs/storage-quickstart-blobs-dotnet
+- Microsoft Learn: Containerize a .NET app: https://learn.microsoft.com/dotnet/core/docker/build-container
+- Docker documentation: multi-stage builds: https://docs.docker.com/build/building/multi-stage/
+- Microsoft REST API Guidelines: https://github.com/microsoft/api-guidelines
+- OWASP REST Security Cheat Sheet: https://cheatsheetseries.owasp.org/cheatsheets/REST_Security_Cheat_Sheet.html
+- MDN Web Docs: HTTP response status codes: https://developer.mozilla.org/en-US/docs/Web/HTTP/Status
+- Bootstrap documentation: https://getbootstrap.com/docs/
+
+## Author
+Naledi, Software Development student. RaceDay POE, Parts 1 to 3.
